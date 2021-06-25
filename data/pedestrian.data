@@ -1,0 +1,3 @@
+classes=1
+names=data/pedestrian.names
+valid=./data/downloaded/val.txt
