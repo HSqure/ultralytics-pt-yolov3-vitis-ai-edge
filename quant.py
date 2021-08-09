@@ -219,111 +219,111 @@ def test(model,
     # Return results
     return mp, mr, map, mf1, loss / len(dataloader)
 
-# def load_data(train=False,
-#               data_dir='',
-#               batch_size=16,
-#               subset_len=None,
-#               sample_method='random',
-#               distributed=False,
-#               **kwargs):
+def load_data(train=False,
+              data_dir='',
+              batch_size=16,
+              subset_len=None,
+              sample_method='random',
+              distributed=False,
+              **kwargs):
 
-#     #prepare data
-#     # random.seed(12345)
-#     traindir = data_dir + '/train'
-#     valdir = data_dir + '/val'
-#     # print('\n\n\n----------->'+os.getcwd()+'\n\n\n')
+    #prepare data
+    # random.seed(12345)
+    traindir = data_dir + '/train'
+    valdir = data_dir + '/val'
+    # print('\n\n\n----------->'+os.getcwd()+'\n\n\n')
 
-#     train_sampler = None
-#     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-#                                         std=[0.229, 0.224, 0.225])
-#     size = 416
-#     resize = 256
-#     if train:
-#         dataset = torchvision.datasets.ImageFolder(
-#             traindir,
-#             transforms.Compose([
-#                 transforms.RandomResizedCrop(size),
-#                 transforms.RandomHorizontalFlip(),
-#                 transforms.ToTensor(),
-#                 normalize,
-#             ]))
-#         if subset_len:
-#             assert subset_len <= len(dataset)
-#         if sample_method == 'random':
-#             dataset = torch.utils.data.Subset(
-#                 dataset, random.sample(range(0, len(dataset)), subset_len))
-#         else:
-#             dataset = torch.utils.data.Subset(dataset, list(range(subset_len)))
-#         if distributed:
-#             train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
-#             data_loader = torch.utils.data.DataLoader(
-#                 dataset,
-#                 batch_size=batch_size,
-#                 shuffle=(train_sampler is None),
-#                 sampler=train_sampler,
-#                 **kwargs)
-#     else:
-#         dataset = torchvision.datasets.ImageFolder(
-#             valdir,
-#             transforms.Compose([
-#                 transforms.Resize(resize),
-#                 transforms.CenterCrop(size),
-#                 transforms.ToTensor(),
-#                 normalize,
-#             ]))
-#         print(len(dataset))
-#         if subset_len:
-#             assert subset_len <= len(dataset)
-#         if sample_method == 'random':
-#             dataset = torch.utils.data.Subset(
-#                 dataset, random.sample(range(0, len(dataset)), subset_len))
-#         else:
-#             dataset = torch.utils.data.Subset(dataset, list(range(subset_len)))
-#         data_loader = torch.utils.data.DataLoader(
-#             dataset, batch_size=batch_size, shuffle=False, **kwargs)
-#     return data_loader, train_sampler
+    train_sampler = None
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                                        std=[0.229, 0.224, 0.225])
+    size = 416
+    resize = 256
+    if train:
+        dataset = torchvision.datasets.ImageFolder(
+            traindir,
+            transforms.Compose([
+                transforms.RandomResizedCrop(size),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                normalize,
+            ]))
+        if subset_len:
+            assert subset_len <= len(dataset)
+        if sample_method == 'random':
+            dataset = torch.utils.data.Subset(
+                dataset, random.sample(range(0, len(dataset)), subset_len))
+        else:
+            dataset = torch.utils.data.Subset(dataset, list(range(subset_len)))
+        if distributed:
+            train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+            data_loader = torch.utils.data.DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=(train_sampler is None),
+                sampler=train_sampler,
+                **kwargs)
+    else:
+        dataset = torchvision.datasets.ImageFolder(
+            valdir,
+            transforms.Compose([
+                transforms.Resize(resize),
+                transforms.CenterCrop(size),
+                transforms.ToTensor(),
+                normalize,
+            ]))
+        print(len(dataset))
+        if subset_len:
+            assert subset_len <= len(dataset)
+        if sample_method == 'random':
+            dataset = torch.utils.data.Subset(
+                dataset, random.sample(range(0, len(dataset)), subset_len))
+        else:
+            dataset = torch.utils.data.Subset(dataset, list(range(subset_len)))
+        data_loader = torch.utils.data.DataLoader(
+            dataset, batch_size=batch_size, shuffle=False, **kwargs)
+    return data_loader, train_sampler
 
 
-# """Computes and stores the average and current value"""
-# class AverageMeter(object):
+"""Computes and stores the average and current value"""
+class AverageMeter(object):
 
-#     def __init__(self, name, fmt=':f'):
-#         self.name = name
-#         self.fmt = fmt
-#         self.reset()
+    def __init__(self, name, fmt=':f'):
+        self.name = name
+        self.fmt = fmt
+        self.reset()
 
-#     def reset(self):
-#         self.val = 0
-#         self.avg = 0
-#         self.sum = 0
-#         self.count = 0
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
 
-#     def update(self, val, n=1):
-#         self.val = val
-#         self.sum += val * n
-#         self.count += n
-#         self.avg = self.sum / self.count
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
 
-#     def __str__(self):
-#         fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
-#         return fmtstr.format(**self.__dict__)
+    def __str__(self):
+        fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
+        return fmtstr.format(**self.__dict__)
 
-#     def accuracy(output, target, topk=(1,)):
-#         """Computes the accuracy over the k top predictions
-#             for the specified values of k"""
-#         with torch.no_grad():
-#             maxk = max(topk)
-#             batch_size = target.size(0)
+    def accuracy(output, target, topk=(1,)):
+        """Computes the accuracy over the k top predictions
+            for the specified values of k"""
+        with torch.no_grad():
+            maxk = max(topk)
+            batch_size = target.size(0)
 
-#             _, pred = output.topk(maxk, 1, True, True)
-#             pred = pred.t()
-#             correct = pred.eq(target.view(1, -1).expand_as(pred))
+            _, pred = output.topk(maxk, 1, True, True)
+            pred = pred.t()
+            correct = pred.eq(target.view(1, -1).expand_as(pred))
 
-#             res = []
-#         for k in topk:
-#             correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
-#             res.append(correct_k.mul_(100.0 / batch_size))
-#         return res
+            res = []
+        for k in topk:
+            correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
+            res.append(correct_k.mul_(100.0 / batch_size))
+        return res
 
 
 def _make_grid(nx=20, ny=20):
@@ -339,14 +339,15 @@ def model_with_post_precess(images, model, data_cfg, register_buffers):
     nc = int(data_cfg['classes'])  # number of classes
     test_path = data_cfg['valid']  # path to test images
     names = load_classes(data_cfg['names'])  # class names
-    nl=ANCHORS
+    nl = ANCHORS
     grid = [torch.zeros(1)] * nl  # init grid
     stride = torch.tensor((8,16,32),dtype=float)  # strides computed during build
-    anchor_grid=register_buffers['anchor_grid']
+    anchor_grid = register_buffers['anchor_grid']
 
     for output in model(images):
-            x.append(output) # update list
+        x.append(output) # update list
         
+    # print(x)
     for i in range(nl):
         bs, _, ny, nx, no = x[i].shape
         if grid[i].shape[2:4] != x[i].shape[2:4]:
@@ -358,14 +359,21 @@ def model_with_post_precess(images, model, data_cfg, register_buffers):
 
     return (torch.cat(z, 1), x)
 
-# def evaluate(model, val_loader, data_cfg, register_buffers):
-#     model.eval()
-#     for iteraction, (images, labels) in tqdm(enumerate(val_loader), 
-#                                                 total=len(val_loader)):
-#         images = images.to(device)
-#         # inference and get result 
-#         inf_out, train_out = model_with_post_precess(images, model, data_cfg, register_buffers)
+''' read buffers '''
+def model_info_read(model):
+    for name, buf in model.named_buffers():
+        if 'anchor_grid' in name:
+            register_buffers={'anchor_grid':buf}
+    return register_buffers
 
+def evaluate(model, val_loader, data_cfg, register_buffers):
+    model.eval()
+    for iteraction, (images, labels) in tqdm(enumerate(val_loader), 
+                                                total=len(val_loader)):
+        images = images.to(device)
+        # inference and get result 
+        inf_out, train_out = model_with_post_precess(images, model, data_cfg, register_buffers)
+        # out = model_with_post_precess(images, model, data_cfg)
 
 def quantization(title='optimize',
                 model_name='', 
@@ -386,13 +394,10 @@ def quantization(title='optimize',
         subset_len = 1
 
     # Load weights
-    # model = resnet18().cpu()
     # model.load_state_dict(torch.load(file_path))
     model = torch.load(file_path, map_location=device)
-    # read buffers
-    for name, buf in model.named_buffers():
-        if 'anchor_grid' in name:
-            register_buffers={'anchor_grid':buf}
+    # read buffers: anchor_grid
+    register_buffers = model_info_read(model)
 
     # ========= visualization ========
     # ----------- 01.modules ----------
@@ -432,7 +437,10 @@ def quantization(title='optimize',
         sample_method='random',
         data_dir=data_dir)
 
-    # evaluate(quant_model, val_loader, data_cfg='data/pedestrian.data', register_buffers=register_buffers)
+    evaluate(quant_model, 
+             val_loader, 
+             ata_cfg='data/pedestrian.data', 
+             register_buffers=register_buffers)
 
     # # fast finetune model or load finetuned parameter before test
     # if finetune:
@@ -450,13 +458,12 @@ def quantization(title='optimize',
     
     # -------------------------------- yolov3 val ---------------------------------------
     # -----------------------------------------------------------------------------------
-
-    with torch.no_grad():
-         mAP = test(model=quant_model,
-                    data_cfg='data/pedestrian.data',
-                    batch_size=batch_size, 
-                    subset_len=subset_len,
-                    register_buffers=register_buffers)
+    if quant_mode == 'test':
+        with torch.no_grad():
+            mAP = test(model=quant_model,
+                        data_cfg='data/pedestrian.data',
+                        subset_len=subset_len,
+                        register_buffers=register_buffers)
 
 
     # -----------------------------------------------------------------------------------
