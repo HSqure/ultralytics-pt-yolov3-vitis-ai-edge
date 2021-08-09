@@ -18,7 +18,7 @@ def _main():
     file_list=file_name_list(FILE_DIR) #查找标注文件目录下的所有文件名并保存在file_list里
 
     for x in file_list:
-        list_file.write('/workspace/models/AI-Model-Zoo/VAI-1.3-Model-Zoo-Code/PyTorch/yolov3-6/data/downloaded/images/val/' + str(x))
+        list_file.write(os.getcwd() + '/images/val/' + str(x))
         list_file.write('\n')
 
 
