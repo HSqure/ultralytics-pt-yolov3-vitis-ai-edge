@@ -91,9 +91,9 @@ RuntimeError: Only Tensors created explicitly by the user (graph leaves) support
 ### 2.定位
 第二步的读取参数的函数`quantizer.load_ft_param()`中:
 
-**解决：**
+### 3.解决方案
 
-`deepopy`改成直接赋值。
+`deepcopy`改成直接赋值。
 
 
 
