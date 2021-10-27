@@ -91,6 +91,10 @@ RuntimeError: Only Tensors created explicitly by the user (graph leaves) support
 ### 2.定位
 第二步的读取参数的函数`quantizer.load_ft_param()`中:
 
+**解决：**
+
+`deepopy`改成直接赋值。
+
 
 
 ---
@@ -803,7 +807,7 @@ NODE TYPE: permute
 
 ### 3.排查方向
 
-- 检查第二步中，模型从读取到.xmodel转换前经过了什么处理，以及是否经过了常规流程（对照组）中应该经过的处理。
+- 检查第二步中，模型从读取到`.xmodel`转换前经过了什么处理，以及是否经过了常规流程（对照组）中应该经过的处理。
 - 已查出核心处理部分,位于源代码: `pytorch_nndct/qproc/utils.py (line 258): `：
 ```python
 def get_deploy_graph_list(quant_model, nndct_graph):
@@ -884,7 +888,7 @@ graph LR
     B([float模型])-->A[剪枝]-->E([剪枝后的float模型])-->F[导出模型权重]-->G[读取模型权重]-->C[量化]-->D([剪枝后的int8模型])
 ```
 
-**结果：**❌
+**结果：** ❌
 
 错误日志:
 
@@ -963,11 +967,11 @@ class AdvancedQuantProcessor(torch.nn.Module):
         mod.node.in_quant_part = True
 ```
 
-**结果：**✔️
+**结果：** ✔️
 
-**解决问题：**`.xmodel`导出问题
+**解决问题：** `.xmodel`导出问题
 
-**未解决问题：**剪枝prune过程中所依赖的loss一直为0，导致导致prune无效。
+**未解决问题：** 剪枝prune过程中所依赖的loss一直为0，导致导致prune无效。
 
 
 
