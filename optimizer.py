@@ -6,6 +6,7 @@ import time
 import pdb
 import random
 from pytorch_nndct.apis import torch_quantizer, dump_xmodel
+from pytorch_nndct import Pruner
 import torch
 import torchvision
 import torchvision.transforms as transforms
@@ -24,11 +25,11 @@ from utils import *
 from utils.parse_config import parse_data_cfg
 from utils import torch_utils
 from torch.utils.data import DataLoader
-#----------------------------------------
 
 # new utils
 from utils.new.loss import ComputeLoss
-
+#----------------------------------------
+DATA_CFG='data/pedestrian.data'
 ANCHORS = 9//3
 #device = torch.device("cuda")
 #device = torch.device("cpu")
@@ -69,12 +70,14 @@ parser.add_argument('--deploy',
     help='export xmodel for deployment')
 args, _ = parser.parse_known_args()
 
+
+
 ''' yolov3 val '''
-def test(model, 
-        data_cfg, 
+def test(model,
         register_buffers,
-        batch_size=16,
-        subset_len=None,
+        data_cfg=DATA_CFG,
+        batch_size=8,
+        subset_len=args.subset_len,
         img_size=416,
         iou_thres=0.25,
         conf_thres=0.001,
@@ -107,10 +110,11 @@ def test(model,
     coco91class = coco80_to_coco91_class()
     print(('%20s' + '%10s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP', 'F1'))
     loss, p, r, f1, mp, mr, map, mf1 = 0., 0., 0., 0., 0., 0., 0., 0.
-    loss_i = torch.zeros(3, device=device)    
+    loss_i = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class = [], [], [], []
     # if model has loss hyperparameters
     compute_loss = ComputeLoss(model) if hasattr(model, 'hyp') else None
+
     for batch_i, (imgs, targets, paths, shapes) in enumerate(tqdm(dataloader, desc='Computing mAP')):
         targets = targets.to(device)
         imgs = imgs.to(device)
@@ -122,7 +126,7 @@ def test(model,
         # Run model
         inf_out, train_out = model_with_post_precess(imgs, model, data_cfg, register_buffers)  # inference and training outputs
 
-        # Compute loss        
+        # Compute loss
         if compute_loss:
             loss, loss_items = compute_loss(train_out, targets.to(device))  # loss scaled by batch_size
             loss_i += compute_loss([x.float() for x in train_out], targets.to(device))[1][:3]  # box, obj, cls
@@ -222,13 +226,14 @@ def test(model,
         cocoEval.accumulate()
         cocoEval.summarize()
         map = cocoEval.stats[1]  # update mAP to pycocotools mAP
-    print(f'\n\n\nLoss: {loss / len(dataloader)} \n\n\n ')
+
     # Return results
-    return mp, mr, map, mf1, loss / len(dataloader)
+    print(f'\n\nLoss: {loss / len(dataloader)}\n\n')
+    return mp, mr, map, mf1, loss / len(dataloader) # loss in average for all epoch
 
 def load_data(train=False,
               data_dir='',
-              batch_size=16,
+              batch_size=8,
               subset_len=None,
               sample_method='random',
               distributed=False,
@@ -291,48 +296,6 @@ def load_data(train=False,
     return data_loader, train_sampler
 
 
-"""Computes and stores the average and current value"""
-class AverageMeter(object):
-
-    def __init__(self, name, fmt=':f'):
-        self.name = name
-        self.fmt = fmt
-        self.reset()
-
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
-
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count
-
-    def __str__(self):
-        fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
-        return fmtstr.format(**self.__dict__)
-
-    def accuracy(output, target, topk=(1,)):
-        """Computes the accuracy over the k top predictions
-            for the specified values of k"""
-        with torch.no_grad():
-            maxk = max(topk)
-            batch_size = target.size(0)
-
-            _, pred = output.topk(maxk, 1, True, True)
-            pred = pred.t()
-            correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-            res = []
-        for k in topk:
-            correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
-            res.append(correct_k.mul_(100.0 / batch_size))
-        return res
-
-
 def _make_grid(nx=20, ny=20):
     yv, xv = torch.meshgrid([torch.arange(ny), torch.arange(nx)])
     return torch.stack((xv, yv), 2).view((1, 1, ny, nx, 2)).float()
@@ -382,6 +345,20 @@ def evaluate(model, val_loader, data_cfg, register_buffers):
         inf_out, train_out = model_with_post_precess(images, model, data_cfg, register_buffers)
         # out = model_with_post_precess(images, model, data_cfg)
 
+"""
+    optimize part
+"""
+def opt_evaluate(val_loader, model, register_buffers):
+    with torch.no_grad():
+        mAP = test(model=model,
+                    register_buffers=register_buffers)
+    return mAP[2]
+
+def ana_eval_fn(model, val_loader, register_buffers):
+    return opt_evaluate(val_loader, model, register_buffers)
+"""
+"""
+
 def quantization(title='optimize',
                 model_name='', 
                 file_path=''): 
@@ -406,27 +383,27 @@ def quantization(title='optimize',
     # read buffers: anchor_grid
     register_buffers = model_info_read(model)
 
-    # ========= visualization ========
-    # ----------- 01.modules ----------
+    # # ========= visualization ========
+    # # ----------- 01.modules ----------
     # print('\n\n\n')
     # for idx, m in enumerate(model.modules()):
     #     print(idx,'->',m)
     # print('\n\n\n')
-    # ----------- 02.named_children -----------
+    # # ----------- 02.named_children -----------
     # print('\n\n\n')
     # for name, module in model.named_children():
     #     print(name,': ',module)
     # print('\n\n\n')    
-    # ----------- 03.named_modules -----------
+    # # ----------- 03.named_modules -----------
     # print('\n\n\n')
     # for idx, m in enumerate(model.named_modules()):
     #     print(idx,'->',m)
-    # print('\n\n\n')    
-    # ----------------------------------------
+    # print('\n\n\n')
+    # # ----------------------------------------
 
     # ================================ Quantizer API ====================================
     # ===================================================================================
-    input = torch.randn([batch_size, 3, 416, 416])
+    input = torch.randn([batch_size, 3, 416, 416], device=device)
     if quant_mode == 'float':
         quant_model = model
     else:
@@ -446,10 +423,39 @@ def quantization(title='optimize',
 
     evaluate(quant_model, 
              val_loader, 
-             data_cfg='data/pedestrian.data', 
+             data_cfg=DATA_CFG, 
              register_buffers=register_buffers)
 
-    # # # fast finetune model or load finetuned parameter before test
+    """
+        optimize part
+    """
+    quant_model = quant_model.to(device)
+    inputs = torch.randn([1, 3, 416, 416], dtype=torch.float32, device=device)
+    pruner = Pruner(quant_model, inputs)
+    print('\n\n\n ===================== Test Prob 1 ===================== \n\n\n')
+    pruner.ana(ana_eval_fn, args=(val_loader, register_buffers))
+    prunered_model = pruner.prune(ratio=0.1)
+    pruner.summary(prunered_model)
+    """
+    """
+
+    # -------------------------------- yolov3 val ---------------------------------------
+    # -----------------------------------------------------------------------------------
+    # if (quant_mode == 'test') or (quant_mode == 'float') :
+    #     with torch.no_grad():
+    #         mAP = test(model=quant_model,
+    #                     data_cfg='data/pedestrian.data',
+    #                     subset_len=subset_len,
+    #                     register_buffers=register_buffers)
+
+
+    # print(f'\n\n\nmAP:{mAP[2]}\n\n\n')
+
+ 
+
+    # -----------------------------------------------------------------------------------
+
+    # # fast finetune model or load finetuned parameter before test
     # if finetune:
     #     ft_loader, _ = load_data(
     #         subset_len=1024,
@@ -463,22 +469,13 @@ def quantization(title='optimize',
     #     elif quant_mode == 'test':
     #         quantizer.load_ft_param()
     
-    # -------------------------------- yolov3 val ---------------------------------------
-    # -----------------------------------------------------------------------------------
-    if (quant_mode == 'test') or (quant_mode == 'float') :
-        with torch.no_grad():
-            mAP = test(model=quant_model,
-                        data_cfg='data/pedestrian.data',
-                        subset_len=subset_len,
-                        register_buffers=register_buffers)
 
-    # -----------------------------------------------------------------------------------
 
     # handle quantization result
     if quant_mode == 'calib':
         quantizer.export_quant_config()
-    if deploy:
-        quantizer.export_xmodel(deploy_check=False)
+    # if deploy:
+    #     quantizer.export_xmodel(deploy_check=False)
     # ===================================================================================
 
 if __name__ == '__main__':

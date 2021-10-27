@@ -6,12 +6,15 @@ import time
 import pdb
 import random
 from pytorch_nndct.apis import torch_quantizer, dump_xmodel
+# from pytorch_nndct import Pruner
 import torch
 import torchvision
 import torchvision.transforms as transforms
 from torchvision.models.resnet import resnet18
 
 from tqdm import tqdm
+
+from utils.torch_utils import is_parallel
 
 #----------------------------------------
 import argparse
@@ -24,14 +27,14 @@ from utils import *
 from utils.parse_config import parse_data_cfg
 from utils import torch_utils
 from torch.utils.data import DataLoader
-#----------------------------------------
 
 # new utils
 from utils.new.loss import ComputeLoss
-
-ANCHORS = 9//3
-#device = torch.device("cuda")
-#device = torch.device("cpu")
+#----------------------------------------
+DATA_CFG='data/pedestrian.data'
+# ANCHORS = 9//3
+# device = torch.device("cuda")
+# device = torch.device("cpu")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 parser = argparse.ArgumentParser()
@@ -43,8 +46,7 @@ parser.add_argument(
 parser.add_argument(
     '--model_dir',
     default="weights",
-    help='Trained model file path. Download pretrained model from the following url and put it in model_dir specified path: https://download.pytorch.org/models/resnet18-5c106cde.pth'
-)
+    help='Trained model file path. Download pretrained model from the following url and put it in model_dir specified path: https://download.pytorch.org/models/resnet18-5c106cde.pth')
 parser.add_argument(
     '--subset_len',
     default=200,
@@ -52,7 +54,7 @@ parser.add_argument(
     help='subset_len to evaluate model, using the whole validation dataset if it is not set')
 parser.add_argument(
     '--batch_size',
-    default=16,
+    default=8,
     type=int,
     help='input data batch size to evaluate model')
 parser.add_argument('--quant_mode', 
@@ -69,12 +71,15 @@ parser.add_argument('--deploy',
     help='export xmodel for deployment')
 args, _ = parser.parse_known_args()
 
+
+
 ''' yolov3 val '''
-def test(model, 
-        data_cfg, 
-        register_buffers,
-        batch_size=16,
-        subset_len=None,
+def test(model,
+        extra_model_info,
+        dataloader=None,
+        data_cfg=DATA_CFG,
+        batch_size=8,
+        subset_len=args.subset_len,
         img_size=416,
         iou_thres=0.25,
         conf_thres=0.001,
@@ -95,22 +100,24 @@ def test(model,
     names = load_classes(data_cfg_iner['names'])  # class names
 
     # Dataloader
-    dataset = LoadImagesAndLabels(test_path, img_size=img_size)
-    dataloader = DataLoader(dataset,
-                            batch_size=batch_size,
-                            num_workers=4,
-                            pin_memory=True,
-                            collate_fn=dataset.collate_fn)
+    if not dataloader:
+        dataset = LoadImagesAndLabels(test_path, img_size=img_size)
+        dataloader = DataLoader(dataset,
+                                batch_size=batch_size,
+                                num_workers=4,
+                                pin_memory=True,
+                                collate_fn=dataset.collate_fn)
 
     seen = 0
     model.eval()
     coco91class = coco80_to_coco91_class()
     print(('%20s' + '%10s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP', 'F1'))
     loss, p, r, f1, mp, mr, map, mf1 = 0., 0., 0., 0., 0., 0., 0., 0.
-    loss_i = torch.zeros(3, device=device)    
+    loss_i = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class = [], [], [], []
     # if model has loss hyperparameters
     compute_loss = ComputeLoss(model) if hasattr(model, 'hyp') else None
+
     for batch_i, (imgs, targets, paths, shapes) in enumerate(tqdm(dataloader, desc='Computing mAP')):
         targets = targets.to(device)
         imgs = imgs.to(device)
@@ -120,7 +127,7 @@ def test(model,
             plot_images(imgs=imgs, targets=targets, fname='test_batch0.jpg')
 
         # Run model
-        inf_out, train_out = model_with_post_precess(imgs, model, data_cfg, register_buffers)  # inference and training outputs
+        inf_out, train_out = model_with_post_precess(imgs, model, data_cfg, extra_model_info)  # inference and training outputs
 
         # Compute loss        
         if compute_loss:
@@ -156,8 +163,7 @@ def test(model,
                         'image_id': image_id,
                         'category_id': coco91class[int(d[6])],
                         'bbox': [float3(x) for x in box[di]],
-                        'score': float(d[4])
-                    })
+                        'score': float(d[4])})
 
             # Assign all predictions as incorrect
             correct = [0] * len(pred)
@@ -222,13 +228,14 @@ def test(model,
         cocoEval.accumulate()
         cocoEval.summarize()
         map = cocoEval.stats[1]  # update mAP to pycocotools mAP
-    print(f'\n\n\nLoss: {loss / len(dataloader)} \n\n\n ')
+
     # Return results
-    return mp, mr, map, mf1, loss / len(dataloader)
+    print(f'\n\nLoss: {loss / len(dataloader)}\n\n')
+    return mp, mr, map, mf1, loss / len(dataloader) # loss in average for all epoch
 
 def load_data(train=False,
               data_dir='',
-              batch_size=16,
+              batch_size=8,
               subset_len=None,
               sample_method='random',
               distributed=False,
@@ -290,71 +297,32 @@ def load_data(train=False,
             dataset, batch_size=batch_size, shuffle=False, **kwargs)
     return data_loader, train_sampler
 
-
-"""Computes and stores the average and current value"""
-class AverageMeter(object):
-
-    def __init__(self, name, fmt=':f'):
-        self.name = name
-        self.fmt = fmt
-        self.reset()
-
-    def reset(self):
-        self.val = 0
-        self.avg = 0
-        self.sum = 0
-        self.count = 0
-
-    def update(self, val, n=1):
-        self.val = val
-        self.sum += val * n
-        self.count += n
-        self.avg = self.sum / self.count
-
-    def __str__(self):
-        fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
-        return fmtstr.format(**self.__dict__)
-
-    def accuracy(output, target, topk=(1,)):
-        """Computes the accuracy over the k top predictions
-            for the specified values of k"""
-        with torch.no_grad():
-            maxk = max(topk)
-            batch_size = target.size(0)
-
-            _, pred = output.topk(maxk, 1, True, True)
-            pred = pred.t()
-            correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-            res = []
-        for k in topk:
-            correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
-            res.append(correct_k.mul_(100.0 / batch_size))
-        return res
-
-
 def _make_grid(nx=20, ny=20):
     yv, xv = torch.meshgrid([torch.arange(ny), torch.arange(nx)])
     return torch.stack((xv, yv), 2).view((1, 1, ny, nx, 2)).float()
 
-def model_with_post_precess(images, model, data_cfg, register_buffers):
+def model_with_post_precess(images, model, data_cfg, extra_model_info):
     model = model.to(device)
     x=[]
-    z=[]  # inference output
-    # Configure run
+    z=[] # inference output
+    # info from data
     data_cfg = parse_data_cfg(data_cfg)
-    nc = int(data_cfg['classes'])  # number of classes
+    lable_nc = int(data_cfg['classes'])  # number of classes
     test_path = data_cfg['valid']  # path to test images
     names = load_classes(data_cfg['names'])  # class names
-    nl = ANCHORS
+    # info from model
+    nl = extra_model_info['nl'] # 3
+    nc = extra_model_info['nc'] # 1
+    stride = extra_model_info['stride'] # torch.tensor((8,16,32)
+    anchor_grid = extra_model_info['anchor_grid']
+    #ERROR check
+    if not nc==lable_nc:
+        raise Exception(f'The class number: {lable_nc} of input data does not match model default class number: {nc} ! Please check it out!')
     grid = [torch.zeros(1)] * nl  # init grid
-    stride = torch.tensor((8,16,32),dtype=float)  # strides computed during build
-    anchor_grid = register_buffers['anchor_grid']
 
     for output in model(images):
         x.append(output) # update list
-        
-    # print(x)
+
     for i in range(nl):
         bs, _, ny, nx, no = x[i].shape
         if grid[i].shape[2:4] != x[i].shape[2:4]:
@@ -368,23 +336,41 @@ def model_with_post_precess(images, model, data_cfg, register_buffers):
 
 ''' read buffers '''
 def model_info_read(model):
-    for name, buf in model.named_buffers():
-        if 'anchor_grid' in name:
-            register_buffers={'anchor_grid':buf}
-    return register_buffers
+    # reading register_buffers of model
+    for name, buf_info in model.named_buffers():
+        extra_model_info = {'anchor_grid':buf_info} if 'anchor_grid' in name else {}
+    # param from the output part (model.model[-1])
+    extra_model_info['stride'] = model.model[-1].stride
+    extra_model_info['nl'] = model.model[-1].nl
+    extra_model_info['nc'] = model.model[-1].nc
+    # hyperparameters from (model)
+    extra_model_info['hyp'] = model.hyp
 
-def evaluate(model, val_loader, data_cfg, register_buffers):
+    return extra_model_info
+
+def evaluate_tool(model, val_loader, data_cfg, extra_model_info):
     model.eval()
     for iteraction, (images, labels) in tqdm(enumerate(val_loader), 
                                                 total=len(val_loader)):
         images = images.to(device)
         # inference and get result 
-        inf_out, train_out = model_with_post_precess(images, model, data_cfg, register_buffers)
+        inf_out, train_out = model_with_post_precess(images, model, data_cfg, extra_model_info)
         # out = model_with_post_precess(images, model, data_cfg)
+
+"""
+    optimize part
+"""
+def evaluate(model, val_loader, extra_model_info):
+    with torch.no_grad():
+        mAP = test(model=model,
+                    # dataloader=val_loader,
+                    extra_model_info=extra_model_info)
+    return mAP[2], mAP[2], mAP[4]
 
 def quantization(title='optimize',
                 model_name='', 
-                file_path=''): 
+                file_path='',
+                fast_finetune=args.fast_finetune): 
 
     data_dir = args.data_dir
     quant_mode = args.quant_mode
@@ -404,38 +390,54 @@ def quantization(title='optimize',
     # model.load_state_dict(torch.load(file_path))
     model = torch.load(file_path, map_location=device)
     # read buffers: anchor_grid
-    register_buffers = model_info_read(model)
+    extra_model_info = model_info_read(model)
 
-    # ========= visualization ========
-    # ----------- 01.modules ----------
+    # # ========= visualization ========
+    # # ----------- 01.modules ----------
     # print('\n\n\n')
     # for idx, m in enumerate(model.modules()):
     #     print(idx,'->',m)
     # print('\n\n\n')
-    # ----------- 02.named_children -----------
+    # # ----------- 02.named_children -----------
     # print('\n\n\n')
     # for name, module in model.named_children():
     #     print(name,': ',module)
     # print('\n\n\n')    
-    # ----------- 03.named_modules -----------
+    # # ----------- 03.named_modules -----------
     # print('\n\n\n')
     # for idx, m in enumerate(model.named_modules()):
     #     print(idx,'->',m)
-    # print('\n\n\n')    
-    # ----------------------------------------
+    # print('\n\n\n')
+    # # ----------------------------------------
 
     # ================================ Quantizer API ====================================
     # ===================================================================================
-    input = torch.randn([batch_size, 3, 416, 416])
+    input = torch.randn([batch_size, 3, 416, 416], device=device)
     if quant_mode == 'float':
         quant_model = model
     else:
         quantizer = torch_quantizer(
             quant_mode, model, (input), device=device)
         quant_model = quantizer.quant_model
+    quant_model = quant_model.to(device)
+
+    # ========= visualization =========
+    # 'na', 'nc', 'nl', 'anchors'
+    # print(f'\n\ngr: {model.gr}')
+    # print(f'\n\nanchors: {model.model[-1].anchors}')
+    # print(f'\n\nmodel.hyp: {model.hyp}')
+    # print(quant_model.module_276.stride)
+    # print(quant_model.module_276.nl)
+    # print(quant_model.module_283)
+    # print(quant_model.module_290)
     
-    # # to get loss value after evaluation
-    # loss_fn = torch.nn.CrossEntropyLoss().to(device)
+
+    # print('\n\n\n')
+    # for idx, m in enumerate(quant_model.modules()):
+    #     print(idx,'->',m)
+    # print('\n\n\n')
+
+    # setattr(quant_model, 'hyp', getattr(model, 'hyp'))
 
     val_loader, _ = load_data(
         subset_len=subset_len,
@@ -444,36 +446,69 @@ def quantization(title='optimize',
         sample_method='random',
         data_dir=data_dir)
 
-    evaluate(quant_model, 
+    evaluate_tool(quant_model, 
              val_loader, 
-             data_cfg='data/pedestrian.data', 
-             register_buffers=register_buffers)
+             data_cfg=DATA_CFG, 
+             extra_model_info=extra_model_info)
 
-    # # # fast finetune model or load finetuned parameter before test
-    # if finetune:
-    #     ft_loader, _ = load_data(
-    #         subset_len=1024,
-    #         train=False,
-    #         batch_size=batch_size,
-    #         sample_method=None,
-    #         data_dir=data_dir,
-    #         model_name=model_name)
-    #     if quant_mode == 'calib':
-    #         quantizer.fast_finetune(evaluate, (quant_model, ft_loader, loss_fn))
-    #     elif quant_mode == 'test':
-    #         quantizer.load_ft_param()
-    
-    # -------------------------------- yolov3 val ---------------------------------------
-    # -----------------------------------------------------------------------------------
-    if (quant_mode == 'test') or (quant_mode == 'float') :
+    """
+        optimize part
+    """
+
+    if fast_finetune:
+        # print mAP of original model for comparation
+        if not deploy:
+            with torch.no_grad():
+                mAP = test(model=quant_model,
+                            data_cfg='data/pedestrian.data',
+                            subset_len=subset_len,
+                            extra_model_info=extra_model_info)
+            print(f'\n\nQuantized model mAP:{mAP[2]}\n\n\n')
+
+        ft_loader, _ = load_data(
+            subset_len=1024,
+            train=False,
+            batch_size=batch_size,
+            sample_method=None,
+            data_dir=data_dir,)
+        if quant_mode == 'calib':
+            # initial Quant Processor and finetune
+            quantizer.fast_finetune(evaluate, (quant_model, ft_loader, extra_model_info))
+        elif quant_mode == 'test':
+            # Quantized Model Evaluation
+            print('\n\n\n ===================== Quantized Model Evaluation ===================== \n')
+            print('Quantized model evaluating......\n')
+            with torch.no_grad():
+                quant_mAP = test(model=quant_model,
+                            data_cfg='data/pedestrian.data',
+                            subset_len=subset_len,
+                            extra_model_info=extra_model_info)
+
+            # initial Quant Processor only
+            quantizer.load_ft_param()
+            quant_model = quantizer.quant_model
+
+            print('Pruned quantized model evaluating......\n')
+            with torch.no_grad():
+                pruned_quant_mAP = test(model=quant_model,
+                            data_cfg='data/pedestrian.data',
+                            subset_len=subset_len,
+                            extra_model_info=extra_model_info)
+            print(f'------ Model mAP ------\n Before purned: {quant_mAP[2]*100}%\n Aafter purned: {pruned_quant_mAP[2]*100}%\n\n')
+                        
+    if quant_mode == 'float' :
+        print('Float model evaluating......\n')
         with torch.no_grad():
-            mAP = test(model=quant_model,
+            float_mAP = test(model=quant_model,
                         data_cfg='data/pedestrian.data',
                         subset_len=subset_len,
-                        register_buffers=register_buffers)
+                        extra_model_info=extra_model_info)
+        print(f'\n\n\nFloat model mAP:{float_mAP[2]*100}%\n\n\n')
+
 
     # -----------------------------------------------------------------------------------
-
+    
+    
     # handle quantization result
     if quant_mode == 'calib':
         quantizer.export_quant_config()
