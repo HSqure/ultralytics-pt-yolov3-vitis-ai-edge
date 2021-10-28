@@ -979,7 +979,7 @@ class AdvancedQuantProcessor(torch.nn.Module):
 
 
 
-#### 4.3. 模型参数修正 
+#### 4.3. 模型参数修正  ✔️
 
 为了解决剪枝prune过程中所依赖的loss一直为0，导致prune无效的问题，需要将读入的裁减后的模型参数补上原有的模型参数后重新走一边量化流程，使其带上 `node.in_quant_part`标志。
 
@@ -999,7 +999,7 @@ class AdvancedQuantProcessor(torch.nn.Module):
     setattr(quant_model,'hyp',getattr(model,'hyp'))
     ```
 
-错误日志:
+**错误日志:** 
 
 ```shell
 Traceback (most recent call last):
@@ -1077,6 +1077,8 @@ Model(
 
 量化后的模型`quant_model`和原模型`model`结构几乎完全不一样,难以使用如下函数来计算loss：
 
+位于`./quant_fast_finetune.py (line 123) :`
+
 ```python
  compute_loss = ComputeLoss(model) if hasattr(model, 'hyp') else None
 ```
@@ -1096,4 +1098,71 @@ model.model[-1].nl
 model.model[-1].anchors
 model.model[-1].stride
 ```
+
+通过将收集的`Hyperparameter`传递给模型：
+
+位于`./quant_fast_finetune.py (line 119) :`
+
+```python
+    # process with model hyperparameters attching
+    for param_key in extra_model_info:
+        setattr(model, param_key, extra_model_info[param_key])
+    # if model has loss hyperparameters
+    compute_loss = ComputeLoss(model)
+```
+收集原Float模型`Hyperparameter`的函数：
+
+位于`./quant_fast_finetune.py (line 342) :`
+
+```python
+''' read buffers '''
+def model_info_read(model):
+    # reading register_buffers of model
+    for name, buf_info in model.named_buffers():
+        extra_model_info = {'anchor_grid':buf_info} if 'anchor_grid' in name else {}
+    # param from the output part (model.model[-1])
+    extra_model_info['stride'] = model.model[-1].stride
+    extra_model_info['nl'] = model.model[-1].nl
+    extra_model_info['nc'] = model.model[-1].nc
+    extra_model_info['na'] = model.model[-1].na
+    extra_model_info['anchors'] = model.model[-1].anchors
+    # hyperparameters from (model)
+    extra_model_info['hyp'] = model.hyp
+    extra_model_info['gr'] = model.gr
+```
+
+**错误日志:** 
+
+```shell
+[VAIQ_NOTE]: =>Preparing data for fast finetuning module parameters ...
+Computing mAP: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 720/720 [02:31<00:00,  4.74it/s]
+               Class    Images   Targets         P         R       mAP        F1
+                 all  5.76e+03  4.08e+04     0.214     0.784     0.599     0.337
+
+
+
+Loss: 0.10504381358623505
+
+
+Computing mAP: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 720/720 [07:33<00:00,  1.59it/s]
+               Class    Images   Targets         P         R       mAP        F1
+                 all  5.76e+03  4.08e+04     0.199     0.777     0.571     0.317
+
+
+
+Loss: 0.11098082363605499
+
+
+
+[VAIQ_NOTE]: =>Fast finetuning module parameters for better quantization accuracy...
+  0%|                                                                                                                                         | 0/75 [00:00<?, ?it/s]
+  /opt/vitis_ai/conda/envs/vitis-ai-pytorch/lib/python3.6/site-packages/pytorch_nndct/qproc/adaquant.py:197: RuntimeWarning: divide by zero encountered in float_scalars
+  sqnr = 10 * np.log10(np.square(float_data).mean() / q_noise)
+Killed
+
+```
+
+**分析：** 
+
+模型被附加上的`Hyperparameter`参数导致了计算问题（prune前后的模型参数差作为的分母为0）。
 
