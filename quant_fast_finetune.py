@@ -31,8 +31,9 @@ from torch.utils.data import DataLoader
 # new utils
 from utils.new.loss import ComputeLoss
 #----------------------------------------
+BATCH_SIZE=11
 DATA_CFG='data/pedestrian.data'
-# ANCHORS = 9//3
+ANCHORS = 9//3
 # device = torch.device("cuda")
 # device = torch.device("cpu")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -54,7 +55,7 @@ parser.add_argument(
     help='subset_len to evaluate model, using the whole validation dataset if it is not set')
 parser.add_argument(
     '--batch_size',
-    default=8,
+    default=BATCH_SIZE,
     type=int,
     help='input data batch size to evaluate model')
 parser.add_argument('--quant_mode', 
@@ -78,7 +79,7 @@ def test(model,
         extra_model_info,
         dataloader=None,
         data_cfg=DATA_CFG,
-        batch_size=8,
+        batch_size=BATCH_SIZE,
         subset_len=args.subset_len,
         img_size=416,
         iou_thres=0.25,
@@ -109,89 +110,92 @@ def test(model,
                                 collate_fn=dataset.collate_fn)
 
     seen = 0
-    model.eval()
+    with torch.no_grad():
+        model.eval()
     coco91class = coco80_to_coco91_class()
-    print(('%20s' + '%10s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP', 'F1'))
     loss, p, r, f1, mp, mr, map, mf1 = 0., 0., 0., 0., 0., 0., 0., 0.
     loss_i = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class = [], [], [], []
-    # if model has loss hyperparameters
-    compute_loss = ComputeLoss(model) if hasattr(model, 'hyp') else None
 
-    for batch_i, (imgs, targets, paths, shapes) in enumerate(tqdm(dataloader, desc='Computing mAP')):
-        targets = targets.to(device)
-        imgs = imgs.to(device)
+    # # if model has loss hyperparameters
+    # compute_loss = ComputeLoss(model, extra_model_info)
 
-        # Plot images with bounding boxes
-        if batch_i == 0 and not os.path.exists('test_batch0.jpg'):
-            plot_images(imgs=imgs, targets=targets, fname='test_batch0.jpg')
+    with torch.no_grad():
+        for batch_i, (imgs, targets, paths, shapes) in enumerate(tqdm(dataloader, desc='Computing mAP')):
+            targets = targets.to(device)
+            imgs = imgs.to(device)
 
-        # Run model
-        inf_out, train_out = model_with_post_precess(imgs, model, data_cfg, extra_model_info)  # inference and training outputs
+            # Plot images with bounding boxes
+            if batch_i == 0 and not os.path.exists('test_batch0.jpg'):
+                plot_images(imgs=imgs, targets=targets, fname='test_batch0.jpg')
 
-        # Compute loss        
-        if compute_loss:
-            loss, loss_items = compute_loss(train_out, targets.to(device))  # loss scaled by batch_size
-            loss_i += compute_loss([x.float() for x in train_out], targets.to(device))[1][:3]  # box, obj, cls
-            loss = loss_i[0] + loss_i[1] # box loss + obj loss
+            with torch.no_grad():
+            # Run model
+                inf_out, train_out = model_with_post_precess(imgs, model, data_cfg, extra_model_info)  # inference and training outputs
 
-        # Run NMS
-        output = non_max_suppression(inf_out, conf_thres=conf_thres, nms_thres=nms_thres)
+            # # Compute loss        
+            # if compute_loss:
+            #     loss, loss_items = compute_loss(train_out, targets.to(device))  # loss scaled by batch_size
+            #     loss_i += compute_loss([x.float() for x in train_out], targets.to(device))[1][:3]  # box, obj, cls
+            #     loss = loss_i[0] + loss_i[1] # box loss + obj loss
 
-        # Statistics per image
-        for si, pred in enumerate(output):
-            labels = targets[targets[:, 0] == si, 1:]
-            nl = len(labels)
-            tcls = labels[:, 0].tolist() if nl else []  # target class
-            seen += 1
+            # Run NMS
+            output = non_max_suppression(inf_out, conf_thres=conf_thres, nms_thres=nms_thres)
 
-            if pred is None:
+            # Statistics per image
+            for si, pred in enumerate(output):
+                labels = targets[targets[:, 0] == si, 1:]
+                nl = len(labels)
+                tcls = labels[:, 0].tolist() if nl else []  # target class
+                seen += 1
+
+                if pred is None:
+                    if nl:
+                        stats.append(([], torch.Tensor(), torch.Tensor(), tcls))
+                    continue
+
+                # Append to pycocotools JSON dictionary
+                if save_json:
+                    # [{"image_id": 42, "category_id": 18, "bbox": [258.15, 41.29, 348.26, 243.78], "score": 0.236}, ...
+                    image_id = int(Path(paths[si]).stem.split('_')[-1])
+                    box = pred[:, :4].clone()  # xyxy
+                    scale_coords(imgs[si].shape[1:], box, shapes[si])  # to original shape
+                    box = xyxy2xywh(box)  # xywh
+                    box[:, :2] -= box[:, 2:] / 2  # xy center to top-left corner
+                    for di, d in enumerate(pred):
+                        jdict.append({
+                            'image_id': image_id,
+                            'category_id': coco91class[int(d[6])],
+                            'bbox': [float3(x) for x in box[di]],
+                            'score': float(d[4])})
+
+                # Assign all predictions as incorrect
+                correct = [0] * len(pred)
                 if nl:
-                    stats.append(([], torch.Tensor(), torch.Tensor(), tcls))
-                continue
+                    detected = []
+                    tbox = xywh2xyxy(labels[:, 1:5]) * img_size  # target boxes
 
-            # Append to pycocotools JSON dictionary
-            if save_json:
-                # [{"image_id": 42, "category_id": 18, "bbox": [258.15, 41.29, 348.26, 243.78], "score": 0.236}, ...
-                image_id = int(Path(paths[si]).stem.split('_')[-1])
-                box = pred[:, :4].clone()  # xyxy
-                scale_coords(imgs[si].shape[1:], box, shapes[si])  # to original shape
-                box = xyxy2xywh(box)  # xywh
-                box[:, :2] -= box[:, 2:] / 2  # xy center to top-left corner
-                for di, d in enumerate(pred):
-                    jdict.append({
-                        'image_id': image_id,
-                        'category_id': coco91class[int(d[6])],
-                        'bbox': [float3(x) for x in box[di]],
-                        'score': float(d[4])})
+                    # Search for correct predictions
+                    for i, (*pbox, pconf, pcls_conf, pcls) in enumerate(pred):
 
-            # Assign all predictions as incorrect
-            correct = [0] * len(pred)
-            if nl:
-                detected = []
-                tbox = xywh2xyxy(labels[:, 1:5]) * img_size  # target boxes
+                        # Break if all targets already located in image
+                        if len(detected) == nl:
+                            break
 
-                # Search for correct predictions
-                for i, (*pbox, pconf, pcls_conf, pcls) in enumerate(pred):
+                        # Continue if predicted class not among image classes
+                        if pcls.item() not in tcls:
+                            continue
 
-                    # Break if all targets already located in image
-                    if len(detected) == nl:
-                        break
+                        # Best iou, index between pred and targets
+                        iou, bi = bbox_iou(pbox, tbox).max(0)
 
-                    # Continue if predicted class not among image classes
-                    if pcls.item() not in tcls:
-                        continue
+                        # If iou > threshold and class is correct mark as correct
+                        if iou > iou_thres and bi not in detected:  # and pcls == tcls[bi]:
+                            correct[i] = 1
+                            detected.append(bi)
 
-                    # Best iou, index between pred and targets
-                    iou, bi = bbox_iou(pbox, tbox).max(0)
-
-                    # If iou > threshold and class is correct mark as correct
-                    if iou > iou_thres and bi not in detected:  # and pcls == tcls[bi]:
-                        correct[i] = 1
-                        detected.append(bi)
-
-            # Append statistics (correct, conf, pcls, tcls)
-            stats.append((correct, pred[:, 4].cpu(), pred[:, 6].cpu(), tcls))
+                # Append statistics (correct, conf, pcls, tcls)
+                stats.append((correct, pred[:, 4].cpu(), pred[:, 6].cpu(), tcls))
 
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in list(zip(*stats))]  # to numpy
@@ -201,6 +205,8 @@ def test(model,
         mp, mr, map, mf1 = p.mean(), r.mean(), ap.mean(), f1.mean()
 
     # Print results
+    print('\n\n')
+    print(('%20s' + '%10s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP', 'F1'))    
     pf = '%20s' + '%10.3g' * 6  # print format
     print(pf % ('all', seen, nt.sum(), mp, mr, map, mf1), end='\n\n')
 
@@ -315,7 +321,7 @@ def model_with_post_precess(images, model, data_cfg, extra_model_info):
     nc = extra_model_info['nc'] # 1
     stride = extra_model_info['stride'] # torch.tensor((8,16,32)
     anchor_grid = extra_model_info['anchor_grid']
-    #ERROR check
+    # ERROR check
     if not nc==lable_nc:
         raise Exception(f'The class number: {lable_nc} of input data does not match model default class number: {nc} ! Please check it out!')
     grid = [torch.zeros(1)] * nl  # init grid
@@ -343,29 +349,40 @@ def model_info_read(model):
     extra_model_info['stride'] = model.model[-1].stride
     extra_model_info['nl'] = model.model[-1].nl
     extra_model_info['nc'] = model.model[-1].nc
+    extra_model_info['na'] = model.model[-1].na
+    extra_model_info['anchors'] = model.model[-1].anchors
     # hyperparameters from (model)
     extra_model_info['hyp'] = model.hyp
+    extra_model_info['gr'] = model.gr
 
     return extra_model_info
 
 def evaluate_tool(model, val_loader, data_cfg, extra_model_info):
     model.eval()
-    for iteraction, (images, labels) in tqdm(enumerate(val_loader), 
-                                                total=len(val_loader)):
-        images = images.to(device)
-        # inference and get result 
-        inf_out, train_out = model_with_post_precess(images, model, data_cfg, extra_model_info)
-        # out = model_with_post_precess(images, model, data_cfg)
+    with torch.no_grad():
+        for iteraction, (images, labels) in tqdm(enumerate(val_loader), 
+                                                    total=len(val_loader)):
+            images = images.to(device)
+            # inference and get result 
+            inf_out, train_out = model_with_post_precess(images, model, data_cfg, extra_model_info)
+
 
 """
     optimize part
 """
 def evaluate(model, val_loader, extra_model_info):
+    # with torch.no_grad():
+    #     eval_result = test(model=model,
+    #                 # dataloader=val_loader,
+    #                 extra_model_info=extra_model_info)
+    # #      mAP,             mAP,            loss
+    # return eval_result[2], eval_result[2], eval_result[4]
     with torch.no_grad():
-        mAP = test(model=model,
-                    # dataloader=val_loader,
-                    extra_model_info=extra_model_info)
-    return mAP[2], mAP[2], mAP[4]
+        evaluate_tool(model, 
+                val_loader, 
+                data_cfg=DATA_CFG,
+                extra_model_info=extra_model_info)
+
 
 def quantization(title='optimize',
                 model_name='', 
@@ -412,7 +429,26 @@ def quantization(title='optimize',
 
     # ================================ Quantizer API ====================================
     # ===================================================================================
+
+    # Data prepare
     input = torch.randn([batch_size, 3, 416, 416], device=device)
+    # For Evaluation
+    val_loader, _ = load_data(
+                        subset_len=subset_len,
+                        train=False,
+                        batch_size=batch_size,
+                        sample_method='random',
+                        data_dir=data_dir)
+
+    # For Finetuning
+    ft_loader, _ = load_data(
+                        subset_len=1024,
+                        train=False,
+                        batch_size=batch_size,
+                        sample_method=None,
+                        data_dir=data_dir,)
+
+    # quant mode process
     if quant_mode == 'float':
         quant_model = model
     else:
@@ -421,68 +457,39 @@ def quantization(title='optimize',
         quant_model = quantizer.quant_model
     quant_model = quant_model.to(device)
 
-    # ========= visualization =========
-    # 'na', 'nc', 'nl', 'anchors'
-    # print(f'\n\ngr: {model.gr}')
-    # print(f'\n\nanchors: {model.model[-1].anchors}')
-    # print(f'\n\nmodel.hyp: {model.hyp}')
-    # print(quant_model.module_276.stride)
-    # print(quant_model.module_276.nl)
-    # print(quant_model.module_283)
-    # print(quant_model.module_290)
-    
-
-    # print('\n\n\n')
-    # for idx, m in enumerate(quant_model.modules()):
-    #     print(idx,'->',m)
-    # print('\n\n\n')
-
-    # setattr(quant_model, 'hyp', getattr(model, 'hyp'))
-
-    val_loader, _ = load_data(
-        subset_len=subset_len,
-        train=False,
-        batch_size=batch_size,
-        sample_method='random',
-        data_dir=data_dir)
-
-    evaluate_tool(quant_model, 
-             val_loader, 
-             data_cfg=DATA_CFG, 
-             extra_model_info=extra_model_info)
+    # equal to test() but without eval result showing
+    # with torch.no_grad():
+    #     evaluate_tool(quant_model, 
+    #                 val_loader, 
+    #                 data_cfg=DATA_CFG, 
+    #                 extra_model_info=extra_model_info)
 
     """
         optimize part
-    """
-
+    """                        
     if fast_finetune:
         # print mAP of original model for comparation
-        if not deploy:
-            with torch.no_grad():
-                mAP = test(model=quant_model,
-                            data_cfg='data/pedestrian.data',
-                            subset_len=subset_len,
-                            extra_model_info=extra_model_info)
-            print(f'\n\nQuantized model mAP:{mAP[2]}\n\n\n')
-
-        ft_loader, _ = load_data(
-            subset_len=1024,
-            train=False,
-            batch_size=batch_size,
-            sample_method=None,
-            data_dir=data_dir,)
+        with torch.no_grad():
+            mAP = test(model=quant_model,
+                        data_cfg='data/pedestrian.data',
+                        subset_len=subset_len,
+                        extra_model_info=extra_model_info)
+        print(f'\n\nQuantized model mAP:{mAP[2]}\n\n\n')
+        
+        # Calibration Step
         if quant_mode == 'calib':
-            # initial Quant Processor and finetune
             quantizer.fast_finetune(evaluate, (quant_model, ft_loader, extra_model_info))
+
+        # Test Step
         elif quant_mode == 'test':
             # Quantized Model Evaluation
             print('\n\n\n ===================== Quantized Model Evaluation ===================== \n')
             print('Quantized model evaluating......\n')
             with torch.no_grad():
                 quant_mAP = test(model=quant_model,
-                            data_cfg='data/pedestrian.data',
-                            subset_len=subset_len,
-                            extra_model_info=extra_model_info)
+                                data_cfg='data/pedestrian.data',
+                                subset_len=subset_len,
+                                extra_model_info=extra_model_info)
 
             # initial Quant Processor only
             quantizer.load_ft_param()
@@ -495,14 +502,15 @@ def quantization(title='optimize',
                             subset_len=subset_len,
                             extra_model_info=extra_model_info)
             print(f'------ Model mAP ------\n Before purned: {quant_mAP[2]*100}%\n Aafter purned: {pruned_quant_mAP[2]*100}%\n\n')
-                        
+    
+    # Float Model Evaluation Part
     if quant_mode == 'float' :
         print('Float model evaluating......\n')
         with torch.no_grad():
             float_mAP = test(model=quant_model,
-                        data_cfg='data/pedestrian.data',
-                        subset_len=subset_len,
-                        extra_model_info=extra_model_info)
+                            data_cfg='data/pedestrian.data',
+                            subset_len=subset_len,
+                            extra_model_info=extra_model_info)
         print(f'\n\n\nFloat model mAP:{float_mAP[2]*100}%\n\n\n')
 
 
@@ -512,8 +520,10 @@ def quantization(title='optimize',
     # handle quantization result
     if quant_mode == 'calib':
         quantizer.export_quant_config()
+        print('\n\n ========== Calibration Completed! ==========\n\n')
     if deploy:
         quantizer.export_xmodel(deploy_check=False)
+        print('\n\n ========== Xmodel export Completed! ==========\n\n')
     # ===================================================================================
 
 if __name__ == '__main__':

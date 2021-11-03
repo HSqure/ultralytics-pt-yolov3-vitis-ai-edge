@@ -31,6 +31,7 @@ from utils.new.loss import ComputeLoss
 #----------------------------------------
 DATA_CFG='data/pedestrian.data'
 ANCHORS = 9//3
+BATCH_SIZE = 8
 #device = torch.device("cuda")
 #device = torch.device("cpu")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -52,7 +53,7 @@ parser.add_argument(
     help='subset_len to evaluate model, using the whole validation dataset if it is not set')
 parser.add_argument(
     '--batch_size',
-    default=8,
+    default=BATCH_SIZE,
     type=int,
     help='input data batch size to evaluate model')
 parser.add_argument('--quant_mode', 
@@ -76,7 +77,7 @@ def test(model,
         register_buffers,
         dataloader=None,
         data_cfg=DATA_CFG,
-        batch_size=16,
+        batch_size=BATCH_SIZE,
         subset_len=args.subset_len,
         img_size=416,
         iou_thres=0.25,
@@ -101,7 +102,7 @@ def test(model,
     if not dataloader:
         dataset = LoadImagesAndLabels(test_path, img_size=img_size)
         dataloader = DataLoader(dataset,
-                                batch_size=batch_size,
+                                batch_size=BATCH_SIZE,
                                 num_workers=4,
                                 pin_memory=True,
                                 collate_fn=dataset.collate_fn)
@@ -109,7 +110,6 @@ def test(model,
     seen = 0
     model.eval()
     coco91class = coco80_to_coco91_class()
-    print(('%20s' + '%10s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP', 'F1'))
     loss, p, r, f1, mp, mr, map, mf1 = 0., 0., 0., 0., 0., 0., 0., 0.
     loss_i = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class = [], [], [], []
@@ -197,6 +197,8 @@ def test(model,
         mp, mr, map, mf1 = p.mean(), r.mean(), ap.mean(), f1.mean()
 
     # Print results
+    print('\n\n')
+    print(('%20s' + '%10s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP', 'F1'))
     pf = '%20s' + '%10.3g' * 6  # print format
     print(pf % ('all', seen, nt.sum(), mp, mr, map, mf1), end='\n\n')
 
@@ -231,7 +233,7 @@ def test(model,
 
 def load_data(train=False,
               data_dir='',
-              batch_size=8,
+              batch_size=BATCH_SIZE,
               subset_len=None,
               sample_method='random',
               distributed=False,
@@ -247,7 +249,7 @@ def load_data(train=False,
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], 
                                         std=[0.229, 0.224, 0.225])
     size = 416
-    resize = 256
+    resize = 416
     if train:
         dataset = torchvision.datasets.ImageFolder(
             traindir,
@@ -293,7 +295,6 @@ def load_data(train=False,
             dataset, batch_size=batch_size, shuffle=False, **kwargs)
     return data_loader, train_sampler
 
-
 def _make_grid(nx=20, ny=20):
     yv, xv = torch.meshgrid([torch.arange(ny), torch.arange(nx)])
     return torch.stack((xv, yv), 2).view((1, 1, ny, nx, 2)).float()
@@ -311,9 +312,10 @@ def model_with_post_precess(images, model, data_cfg, register_buffers):
     grid = [torch.zeros(1)] * nl  # init grid
     stride = torch.tensor((8,16,32),dtype=float)  # strides computed during build
     anchor_grid = register_buffers['anchor_grid']
-
-    for output in model(images):
-        x.append(output) # update list
+    
+    with torch.no_grad():
+        for output in model(images):
+            x.append(output) # update list
         
     # print(x)
     for i in range(nl):
@@ -336,23 +338,30 @@ def model_info_read(model):
 
 def evaluate_tool(model, val_loader, data_cfg, register_buffers):
     model.eval()
-    for iteraction, (images, labels) in tqdm(enumerate(val_loader), 
-                                                total=len(val_loader)):
-        images = images.to(device)
-        # inference and get result 
-        inf_out, train_out = model_with_post_precess(images, model, data_cfg, register_buffers)
-        # out = model_with_post_precess(images, model, data_cfg)
+    with torch.no_grad():
+        for iteraction, (images, labels) in tqdm(enumerate(val_loader), 
+                                                    total=len(val_loader)):
+            images = images.to(device)
+            # inference and get result 
+            inf_out, train_out = model_with_post_precess(images, model, data_cfg, register_buffers)
+            # Run NMS
+            output = non_max_suppression(inf_out, conf_thres=0.5, nms_thres=0.001)
 
 """
     optimize part
 """
-def evaluate(model, val_loader, register_buffers):
+def evaluate(model, val_loader,register_buffers):
     print('\n\n\n ===================== Test Prob 0 ===================== \n\n\n')
     with torch.no_grad():
-        mAP = test(model=model,
-                    # dataloader=val_loader,
+        # mAP = test(model=model,
+        #             register_buffers=register_buffers)
+        # return mAP[2], mAP[2], mAP[4]
+        evaluate_tool(model, 
+                    val_loader, 
+                    data_cfg=DATA_CFG,
                     register_buffers=register_buffers)
-    return mAP[2], mAP[2], mAP[4]
+
+    # return 1, 1, 1
 
 """
 """
@@ -402,6 +411,20 @@ def quantization(title='optimize',
 
     # ================================ Quantizer API ====================================
     # ===================================================================================
+
+    val_loader, _ = load_data(
+    subset_len=subset_len,
+    train=False,
+    batch_size=batch_size,
+    sample_method='random',
+    data_dir=data_dir)
+
+    with torch.no_grad():
+        evaluate_tool(model, 
+            val_loader, 
+            data_cfg=DATA_CFG,
+            register_buffers=register_buffers)
+
     input = torch.randn([batch_size, 3, 416, 416], device=device)
     if quant_mode == 'float':
         quant_model = model
@@ -410,18 +433,10 @@ def quantization(title='optimize',
             quant_mode, model, (input), device=device)
         quant_model = quantizer.quant_model
     quant_model = quant_model.to(device)
-    # # to get loss value after evaluation
-    # loss_fn = torch.nn.CrossEntropyLoss().to(device)
-
-    val_loader, _ = load_data(
-        subset_len=subset_len,
-        train=False,
-        batch_size=batch_size,
-        sample_method='random',
-        data_dir=data_dir)
 
     # evaluate_tool(quant_model, 
     #          val_loader, 
+    #          data_cfg=DATA_CFG,
     #          register_buffers=register_buffers)
 
     """
@@ -430,10 +445,14 @@ def quantization(title='optimize',
 
     if fast_finetune:
         with torch.no_grad():
-            mAP = test(model=quant_model,
-                        data_cfg='data/pedestrian.data',
-                        subset_len=subset_len,
-                        register_buffers=register_buffers)
+        #     mAP = test(model=quant_model,
+        #                 data_cfg=DATA_CFG,
+        #                 subset_len=subset_len,
+        #                 register_buffers=register_buffers)
+            evaluate_tool(quant_model, 
+                val_loader, 
+                data_cfg=DATA_CFG,
+                register_buffers=register_buffers)
         ft_loader, _ = load_data(
             subset_len=1024,
             train=False,
@@ -449,7 +468,7 @@ def quantization(title='optimize',
     if quant_mode=='test':
         with torch.no_grad():
             mAP = test(model=quant_model,
-                        data_cfg='data/pedestrian.data',
+                        data_cfg=DATA_CFG,
                         subset_len=subset_len,
                         register_buffers=register_buffers)
                         
