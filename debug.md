@@ -93,6 +93,12 @@ RuntimeError: Only Tensors created explicitly by the user (graph leaves) support
 
 ### 3.解决方案
 
+
+
+发现调用函数前跑一下test来eval一下就不会报错deepcopy问题了！！！！！！！！！！！！！！！！！！！！！！！！！
+
+
+
 `deepcopy`改成直接赋值。
 
 
@@ -1164,5 +1170,10 @@ Killed
 
 **分析：** 
 
-模型被附加上的`Hyperparameter`参数导致了计算问题（prune前后的模型参数差作为的分母为0）。
+根据SystemMonitor，发现运算到这里的时候内存爆了。
 
+
+
+**原因：** 
+
+`quantizer.fast_finetune(evaluate, (quant_model, extra_model_info))`中`evaluate`里不能使用`test()`函数，似乎里面有些问题，只能使用更lite的`evaluate_tool`
