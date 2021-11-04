@@ -451,6 +451,12 @@ def quantization(title='optimize',
                             register_buffers=register_buffers)
 
         if quant_mode == 'calib':
+            ft_loader, _ = load_data(
+                                subset_len=1024,
+                                train=False,
+                                batch_size=batch_size,
+                                sample_method=None,
+                                data_dir=data_dir,)
             print('\n\n\n ===================== Test Prob 1 ===================== \n\n\n')
             quantizer.fast_finetune(evaluate, (quant_model, ft_loader, register_buffers))
 
