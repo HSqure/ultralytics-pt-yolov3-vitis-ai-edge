@@ -371,6 +371,7 @@ def evaluate_tool(model, val_loader, data_cfg, extra_model_info):
     optimize part
 """
 def evaluate(model, val_loader, extra_model_info):
+    # 用test()会报错
     # with torch.no_grad():
     #     eval_result = test(model=model,
     #                 # dataloader=val_loader,
@@ -482,11 +483,13 @@ def quantization(title='optimize',
 
         # Test Step
         elif quant_mode == 'test':
+            batch_size=1
             # Quantized Model Evaluation
             print('\n\n\n ===================== Quantized Model Evaluation ===================== \n')
             print('Quantized model evaluating......\n')
             with torch.no_grad():
                 quant_mAP = test(model=quant_model,
+                                batch_size=batch_size
                                 data_cfg='data/pedestrian.data',
                                 subset_len=subset_len,
                                 extra_model_info=extra_model_info)
@@ -498,10 +501,11 @@ def quantization(title='optimize',
             print('Pruned quantized model evaluating......\n')
             with torch.no_grad():
                 pruned_quant_mAP = test(model=quant_model,
-                            data_cfg='data/pedestrian.data',
-                            subset_len=subset_len,
-                            extra_model_info=extra_model_info)
-            print(f'------ Model mAP ------\n Before purned: {quant_mAP[2]*100}%\n Aafter purned: {pruned_quant_mAP[2]*100}%\n\n')
+                                        batch_size=batch_size
+                                        data_cfg='data/pedestrian.data',
+                                        subset_len=subset_len,
+                                        extra_model_info=extra_model_info)
+            print(f'------ Model mAP ------\n Before purned: {quant_mAP[2]*100}%\n After purned: {pruned_quant_mAP[2]*100}%\n\n')
     
     # Float Model Evaluation Part
     if quant_mode == 'float' :
