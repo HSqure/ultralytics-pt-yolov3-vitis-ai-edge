@@ -291,7 +291,7 @@ def load_data(train=False,
                 transforms.ToTensor(),
                 normalize,
             ]))
-        print(len(dataset))
+        print(f'\nData Number: {len(dataset)}\n')
         if subset_len:
             assert subset_len <= len(dataset)
         if sample_method == 'random':

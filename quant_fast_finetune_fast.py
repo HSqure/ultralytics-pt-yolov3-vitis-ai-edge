@@ -40,6 +40,7 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument(
     '--data_dir',
+    # default= 'data/downloaded/images',
     default="test_sample",
     help='Data set directory, when quant_mode=calib, it is for calibration, while quant_mode=test it is for evaluation')
 parser.add_argument(
@@ -48,7 +49,7 @@ parser.add_argument(
     help='Trained model file path. Download pretrained model from the following url and put it in model_dir specified path: https://download.pytorch.org/models/resnet18-5c106cde.pth')
 parser.add_argument(
     '--subset_len',
-    default=200,
+    default=1024,
     type=int,
     help='subset_len to evaluate model, using the whole validation dataset if it is not set')
 parser.add_argument(
@@ -74,7 +75,7 @@ args, _ = parser.parse_known_args()
 
 ''' yolov3 val '''
 def test(model,
-        register_buffers,
+        extra_model_info,
         dataloader=None,
         data_cfg=DATA_CFG,
         batch_size=BATCH_SIZE,
@@ -123,7 +124,7 @@ def test(model,
             plot_images(imgs=imgs, targets=targets, fname='test_batch0.jpg')
 
         # Run model
-        inf_out, train_out = model_with_post_precess(imgs, model, data_cfg, register_buffers)  # inference and training outputs
+        inf_out, train_out = model_with_post_precess(imgs, model, data_cfg, extra_model_info)  # inference and training outputs
         
         # # Compute loss
         # loss, loss_items = compute_loss(train_out, targets.to(device))  # loss scaled by batch_size
@@ -283,7 +284,7 @@ def load_data(train=False,
                 transforms.ToTensor(),
                 normalize,
             ]))
-        print(len(dataset))
+        print(f'\nData Number: {len(dataset)}\n')
         if subset_len:
             assert subset_len <= len(dataset)
         if sample_method == 'random':
@@ -299,25 +300,28 @@ def _make_grid(nx=20, ny=20):
     yv, xv = torch.meshgrid([torch.arange(ny), torch.arange(nx)])
     return torch.stack((xv, yv), 2).view((1, 1, ny, nx, 2)).float()
 
-def model_with_post_precess(images, model, data_cfg, register_buffers):
+def model_with_post_precess(images, model, data_cfg, extra_model_info):
     model = model.to(device)
     x=[]
-    z=[]  # inference output
-    # Configure run
+    z=[] # inference output
+    # info from data
     data_cfg = parse_data_cfg(data_cfg)
-    nc = int(data_cfg['classes'])  # number of classes
+    lable_nc = int(data_cfg['classes'])  # number of classes
     test_path = data_cfg['valid']  # path to test images
     names = load_classes(data_cfg['names'])  # class names
-    nl = ANCHORS
+    # info from model
+    nl = extra_model_info['nl'] # 3
+    nc = extra_model_info['nc'] # 1
+    stride = extra_model_info['stride'] # torch.tensor((8,16,32)
+    anchor_grid = extra_model_info['anchor_grid']
+    # ERROR check
+    if not nc==lable_nc:
+        raise Exception(f'The class number: {lable_nc} of input data does not match model default class number: {nc} ! Please check it out!')
     grid = [torch.zeros(1)] * nl  # init grid
-    stride = torch.tensor((8,16,32),dtype=float)  # strides computed during build
-    anchor_grid = register_buffers['anchor_grid']
-    
-    with torch.no_grad():
-        for output in model(images):
-            x.append(output) # update list
-        
-    # print(x)
+
+    for output in model(images):
+        x.append(output) # update list
+
     for i in range(nl):
         bs, _, ny, nx, no = x[i].shape
         if grid[i].shape[2:4] != x[i].shape[2:4]:
@@ -331,35 +335,44 @@ def model_with_post_precess(images, model, data_cfg, register_buffers):
 
 ''' read buffers '''
 def model_info_read(model):
-    for name, buf in model.named_buffers():
-        if 'anchor_grid' in name:
-            register_buffers={'anchor_grid':buf}
-    return register_buffers
+    # reading register_buffers of model
+    for name, buf_info in model.named_buffers():
+        extra_model_info = {'anchor_grid':buf_info} if 'anchor_grid' in name else {}
+    # param from the output part (model.model[-1])
+    extra_model_info['stride'] = model.model[-1].stride
+    extra_model_info['nl'] = model.model[-1].nl
+    extra_model_info['nc'] = model.model[-1].nc
+    extra_model_info['na'] = model.model[-1].na
+    extra_model_info['anchors'] = model.model[-1].anchors
+    # hyperparameters from (model)
+    extra_model_info['hyp'] = model.hyp
+    extra_model_info['gr'] = model.gr
 
-def evaluate_tool(model, val_loader, data_cfg, register_buffers):
+    return extra_model_info
+
+def evaluate_tool(model, val_loader, data_cfg, extra_model_info):
     model.eval()
     with torch.no_grad():
         for iteraction, (images, labels) in tqdm(enumerate(val_loader), 
                                                     total=len(val_loader)):
             images = images.to(device)
             # inference and get result 
-            inf_out, train_out = model_with_post_precess(images, model, data_cfg, register_buffers)
+            inf_out, train_out = model_with_post_precess(images, model, data_cfg, extra_model_info)
             # Run NMS
             output = non_max_suppression(inf_out, conf_thres=0.5, nms_thres=0.001)
 
 """
     optimize part
 """
-def evaluate(model, val_loader,register_buffers):
-    print('\n\n\n ===================== Test Prob 0 ===================== \n\n\n')
+def evaluate(model, val_loader,extra_model_info):
     with torch.no_grad():
         # mAP = test(model=model,
-        #             register_buffers=register_buffers)
+        #             extra_model_info=extra_model_info)
         # return mAP[2], mAP[2], mAP[4]
         evaluate_tool(model, 
                     val_loader, 
                     data_cfg=DATA_CFG,
-                    register_buffers=register_buffers)
+                    extra_model_info=extra_model_info)
 
     # return 1, 1, 1
 
@@ -389,7 +402,7 @@ def quantization(title='optimize',
     # model.load_state_dict(torch.load(file_path))
     model = torch.load(file_path, map_location=device)
     # read buffers: anchor_grid
-    register_buffers = model_info_read(model)
+    extra_model_info = model_info_read(model)
 
     # # ========= visualization ========
     # # ----------- 01.modules ----------
@@ -423,7 +436,7 @@ def quantization(title='optimize',
         evaluate_tool(model, 
             val_loader, 
             data_cfg=DATA_CFG,
-            register_buffers=register_buffers)
+            extra_model_info=extra_model_info)
 
     input = torch.randn([batch_size, 3, 416, 416], device=device)
     if quant_mode == 'float':
@@ -434,11 +447,6 @@ def quantization(title='optimize',
         quant_model = quantizer.quant_model
     quant_model = quant_model.to(device)
 
-    # evaluate_tool(quant_model, 
-    #          val_loader, 
-    #          data_cfg=DATA_CFG,
-    #          register_buffers=register_buffers)
-
     """
         optimize part
     """
@@ -448,22 +456,22 @@ def quantization(title='optimize',
             evaluate_tool(quant_model, 
                             val_loader, 
                             data_cfg=DATA_CFG,
-                            register_buffers=register_buffers)
+                            extra_model_info=extra_model_info)
 
         if quant_mode == 'calib':
             ft_loader, _ = load_data(
-                                subset_len=1024,
+                                subset_len=subset_len,
                                 train=False,
                                 batch_size=batch_size,
                                 sample_method=None,
                                 data_dir=data_dir,)
             print('\n\n\n ===================== Test Prob 1 ===================== \n\n\n')
-            quantizer.fast_finetune(evaluate, (quant_model, ft_loader, register_buffers))
+            quantizer.fast_finetune(evaluate, (quant_model, ft_loader, extra_model_info))
 
         elif quant_mode == 'test':
             batch_size=1
             ft_loader, _ = load_data(
-                                subset_len=1024,
+                                subset_len=subset_len,
                                 train=False,
                                 batch_size=batch_size,
                                 sample_method=None,
@@ -473,43 +481,42 @@ def quantization(title='optimize',
                 evaluate_tool(quant_model, 
                                 val_loader, 
                                 data_cfg=DATA_CFG,
-                                register_buffers=register_buffers)
+                                extra_model_info=extra_model_info)
             quantizer.load_ft_param()
             quant_model = quantizer.quant_model
             with torch.no_grad():
                 evaluate_tool(quant_model, 
                                 val_loader, 
                                 data_cfg=DATA_CFG,
-                                register_buffers=register_buffers)
+                                extra_model_info=extra_model_info)
 
-    if quant_mode=='test':
+            with torch.no_grad():
+                mAP = test(model=quant_model,
+                            data_cfg=DATA_CFG,
+                            subset_len=subset_len,
+                            extra_model_info=extra_model_info)
+    else:
         with torch.no_grad():
-            mAP = test(model=quant_model,
-                        data_cfg=DATA_CFG,
-                        subset_len=subset_len,
-                        register_buffers=register_buffers)
-                        
+            evaluate_tool(model, 
+                val_loader, 
+                data_cfg=DATA_CFG,
+                extra_model_info=extra_model_info)
     """
     """
 
-
-    # -------------------------------- yolov3 val ---------------------------------------
+    # -------------------------------- val ---------------------------------------
     # -----------------------------------------------------------------------------------
     # if (quant_mode == 'test') or (quant_mode == 'float') :
     #     with torch.no_grad():
     #         mAP = test(model=quant_model,
     #                     data_cfg='data/pedestrian.data',
     #                     subset_len=subset_len,
-    #                     register_buffers=register_buffers)
-
-
+    #                     extra_model_info=extra_model_info)
     # print(f'\n\n\nmAP:{mAP[2]}\n\n\n')
 
 
     # -----------------------------------------------------------------------------------
-    
-    # elif quant_mode == 'test':
-    #     quantizer.load_ft_param()
+
     
     # handle quantization result
     if quant_mode == 'calib':
