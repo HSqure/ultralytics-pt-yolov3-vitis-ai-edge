@@ -60,7 +60,7 @@ using namespace std::chrono;
 #define NMS_THRESHOLD 0.08f
 #define YOLO_OUTPUT_0 "Model__Model_Detect_Conv2d_m__ModuleList_0__1870"
 #define YOLO_OUTPUT_1 "Model__Model_Detect_Conv2d_m__ModuleList_1__1894"
-#define YOLO_OUTPUT_2 "Model__Model_Detect_Conv2d_m__ModuleList_2__1918“
+#define YOLO_OUTPUT_2 "Model__Model_Detect_Conv2d_m__ModuleList_2__1918"
 bool usePPFlag = true;
 
 // Flag initialize
@@ -485,11 +485,10 @@ int main(const int argc, const char** argv) {
 	TensorShape outshapes[outputCnt];
 	shapes.inTensorList = inshapes;
 	shapes.outTensorList = outshapes;
-	getTensorShape(runner.get(), &shapes, inputCnt, {
-                    "Model__Model_Detect_Conv2d_m__ModuleList_2__1918", 
-                    "Model__Model_Detect_Conv2d_m__ModuleList_1__1894", 
-                    "Model__Model_Detect_Conv2d_m__ModuleList_0__1870",
-                });
+	getTensorShape(runner.get(), &shapes, inputCnt, {YOLO_OUTPUT_2, 
+													 YOLO_OUTPUT_1, 
+													 YOLO_OUTPUT_0,
+													 });
 
   array<thread, 6> threadsList = {
       thread(readFrame, argv[1]), thread(displayFrame),
