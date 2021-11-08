@@ -56,12 +56,19 @@ using namespace std;
 using namespace cv;
 using namespace std::chrono;
 
-#define NMS_THRESHOLD 0.1f
+// Defaut Parameters Setting
+#define NMS_THRESHOLD 0.08f
+#define YOLO_OUTPUT_0 "Model__Model_Detect_Conv2d_m__ModuleList_0__1870"
+#define YOLO_OUTPUT_1 "Model__Model_Detect_Conv2d_m__ModuleList_1__1894"
+#define YOLO_OUTPUT_2 "Model__Model_Detect_Conv2d_m__ModuleList_2__1918“
 bool usePPFlag = true;
+
+// Flag initialize
 int idxInputImage = 0;  // frame index of input video
 int idxShowImage = 0;   // next frame index to be displayed
 bool bReading = true;   // flag of reading input frame
 bool bExiting = false;
+
 chrono::system_clock::time_point start_time;
 
 typedef pair<int, Mat> imagePair;
@@ -204,16 +211,17 @@ void readFrame(const char* fileName) {
         usleep(20000);
         Mat img;
         if (queueInput.size() < 30) {
-        if (!video.read(img)) {
-            break;
-        }
+			if (!video.read(img)) {
+				break;
+			}
 
-        mtxQueueInput.lock();
-        queueInput.push(make_pair(idxInputImage++, img));
-        mtxQueueInput.unlock();
-        } else {
-        usleep(10);
-        }
+			mtxQueueInput.lock();
+			queueInput.push(make_pair(idxInputImage++, img));
+			mtxQueueInput.unlock();
+        } 
+		else {
+			usleep(10);
+		}
     }
 
     video.release();
