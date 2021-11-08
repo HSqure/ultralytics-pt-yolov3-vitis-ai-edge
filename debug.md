@@ -1140,25 +1140,6 @@ def model_info_read(model):
 **错误日志:** 
 
 ```shell
-[VAIQ_NOTE]: =>Preparing data for fast finetuning module parameters ...
-Computing mAP: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 720/720 [02:31<00:00,  4.74it/s]
-               Class    Images   Targets         P         R       mAP        F1
-                 all  5.76e+03  4.08e+04     0.214     0.784     0.599     0.337
-
-
-
-Loss: 0.10504381358623505
-
-
-Computing mAP: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 720/720 [07:33<00:00,  1.59it/s]
-               Class    Images   Targets         P         R       mAP        F1
-                 all  5.76e+03  4.08e+04     0.199     0.777     0.571     0.317
-
-
-
-Loss: 0.11098082363605499
-
-
 
 [VAIQ_NOTE]: =>Fast finetuning module parameters for better quantization accuracy...
   0%|                                                                                                                                         | 0/75 [00:00<?, ?it/s]
@@ -1176,4 +1157,138 @@ Killed
 
 **原因：** 
 
-`quantizer.fast_finetune(evaluate, (quant_model, extra_model_info))`中`evaluate`里不能使用`test()`函数，似乎里面有些问题，只能使用更lite的`evaluate_tool`
+`quantizer.fast_finetune(evaluate, (quant_model, extra_model_info))`中`evaluate`里不能使用`test()`函数，似乎里面有些问题，只能使用更lite的`evaluate_tool()`
+
+
+
+### 5. 注意点
+
+不同`eval()`函数极大地影响了裁减之后模型的质量，直接体现在了`mAP`上,其中：
+
+
+
+**组1：** 总体里完全不使用使用函数`test()`，只使用函数`evaluate_tool()`来evaluated:
+
+```shell
+python quant_fast_finetune_fast.py --quant_mode calib --fast_finetune
+python quant_fast_finetune_fast.py  --quant_mode test --subset_len 1 --batch_size=1 --fast_finetune --deploy
+```
+
+最终结果：
+
+```shell
+Subset_len: 1024
+
+[VAIQ_NOTE]: =>Loading quant model parameters.(quantize_result/param.pth)
+
+[VAIQ_NOTE]: =>Get module with quantization.
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1/1 [00:00<00:00, 18.65it/s]
+Computing mAP:
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 720/720 [02:23<00:00,  5.01it/s]
+
+
+               Class    Images   Targets         P         R       mAP        F1
+                 all  5.76e+03  4.08e+04     0.204     0.787     0.584     0.324
+
+
+[VAIQ_NOTE]: =>Converting to xmodel ...
+
+[VAIQ_NOTE]: =>Successfully convert 'Model' to xmodel.(quantize_result/Model_int.xmodel)
+
+
+After Compilation:
+name: yolov3-pedestrian.xmodel 
+size: 64.1 MB (64,090,623 bytes)
+```
+
+
+
+**组2：** 总体里参杂函数`test()`和函数`evaluate_tool()`来evaluate:
+
+```shell
+python quant_fast_finetune.py --quant_mode calib --fast_finetune
+python quant_fast_finetune.py  --quant_mode test --subset_len 1 --batch_size=1 --fast_finetune --deploy
+```
+
+最终结果：
+
+```shell
+Subset_len: 200
+
+[VAIQ_NOTE]: =>Loading quant model parameters.(quantize_result/param.pth)
+
+[VAIQ_NOTE]: =>Get module with quantization.
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1/1 [00:00<00:00, 18.34it/s]
+Computing mAP: 
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 720/720 [02:34<00:00,  4.66it/s]
+
+
+               Class    Images   Targets         P         R       mAP        F1
+                 all  5.76e+03  4.08e+04     0.168     0.707     0.487     0.271
+
+
+[VAIQ_NOTE]: =>Converting to xmodel ...
+
+[VAIQ_NOTE]: =>Successfully convert 'Model' to xmodel.(quantize_result/Model_int.xmodel)
+
+
+After Compilation:
+name: yolov3-pedestrian.xmodel 
+size: 64.0 MB (64,006,246 bytes)
+```
+
+
+
+**组3：** 不使用prune工具:
+
+```shell
+python quant_fast_finetune.py --quant_mode calib
+python quant_fast_finetune.py  --quant_mode test --subset_len 1 --batch_size=1 --deploy
+```
+
+最终结果：
+
+```shell
+
+[VAIQ_NOTE]: =>Get module with quantization.
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1/1 [00:00<00:00,  4.37it/s]
+Computing mAP:
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 360/360 [01:24<00:00,  4.27it/s]
+
+
+               Class    Images   Targets         P         R       mAP        F1
+                 all  5.76e+03  4.08e+04     0.325     0.449      0.24     0.377
+
+
+[VAIQ_NOTE]: =>Converting to xmodel ...
+
+[VAIQ_NOTE]: =>Successfully convert 'Model' to xmodel.(quantize_result/Model_int.xmodel)
+
+
+After Compilation:
+name: yolov3-pedestrian.xmodel 
+size: 64.1 MB (64,090,631 bytes)
+```
+
+
+
+**分析：** 
+
+|         只使用函数`evaluate_tool()`来evaluate的模型          |              参杂使用了`eval()`来evaluate的模型              |                    不进行`purne`的模型                     |
+| :----------------------------------------------------------: | :----------------------------------------------------------: | :--------------------------------------------------------: |
+| 裁减程度中等 \| **效果最好** \|`置信度conf < 30%` |  `mAP: 0.584 ` | 裁减程度最大 \| **效果一般** \| `置信度conf < 30%`| `mAP: 0.487 ` | 无裁减 \| **效果最差** \| `置信度conf < 1%` | `mAP: 0.24 ` |
+
+Prune的效果可能跟`subset_len`有关。
+
+
+
+
+
+
+
+
+
+
+
+
+
