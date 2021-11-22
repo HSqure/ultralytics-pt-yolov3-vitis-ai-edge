@@ -6,7 +6,7 @@ This demo is only used for inference testing of `Vitis AI v1.4` and quantitative
 * `Vitis-AI V1.4 Docker-GPU`
 
 ### Attention
-Training code use [ultralytis yolov3]!https://github.com/ultralytics/yolov3 **BUT** model weights exporting part **NEED SOME MODIFICATION**.
+Training code use [ultralytis yolov3](https://github.com/ultralytics/yolov3) **BUT** model weights exporting part **NEED SOME MODIFICATION**.
 
 **Exporting part**
 ```python
