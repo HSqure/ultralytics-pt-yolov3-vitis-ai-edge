@@ -23,11 +23,11 @@ if (not opt.nosave) or (final_epoch and not opt.evolve):  # if save
 
     # Save last, best and delete
     torch.save(ckpt, last)
-    torch.save(model, last_quant, _use_new_zipfile_serialization=False) # 用于量化的兼容版本
+    torch.save(model, last_quant, _use_new_zipfile_serialization=False) # For quantization (用于量化的兼容版本)
 
     if best_fitness == fi:
         torch.save(ckpt, best)
-        torch.save(model, best_quant, _use_new_zipfile_serialization=False) # 用于量化的兼容版本
+        torch.save(model, best_quant, _use_new_zipfile_serialization=False) # For quantization (用于量化的兼容版本)
     if wandb_logger.wandb:
         if ((epoch + 1) % opt.save_period == 0 and not final_epoch) and opt.save_period != -1:
             wandb_logger.log_model(
